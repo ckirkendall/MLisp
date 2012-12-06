@@ -1,0 +1,17 @@
+bin/
+pom.xml
+*jar
+.lein-failures
+.lein-deps-sum
+target
+.settings
+.metadata
+.project
+.classpath
+*.js
+sample/resources/public/cljs/
+*.*#
+.#*
+*.*~
+.ensime
+.ensime_lucene/
