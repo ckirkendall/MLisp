@@ -10,16 +10,11 @@ class LangSpec extends FunSpec {
     val env = new ChildEnv(new NilEnv)
     env.assign(Symbol("true"), java.lang.Boolean.TRUE)
     env.assign(Symbol("false"), java.lang.Boolean.FALSE)
-    env.assign(Symbol("if"), new IfFn())
-    env.assign(Symbol("def"), new DefFn())
-    env.assign(Symbol("fn"), new FnBuilder(false))
-    env.assign(Symbol("macro"), new FnBuilder(true))
-    env.assign(Symbol("."), new DotFn())
     env.assign(Symbol("*reader*"), reader)
     env.assign(Symbol("*coreenv*"), env)
     env
   }
-
+/*
   describe("An INT - 1,2,3") {
     val str="1"
 
@@ -304,4 +299,5 @@ class LangSpec extends FunSpec {
       intercept[RuntimeException] { Eval.eval(fnExp.get, env) }
     }
   }
+  */
 }
