@@ -36,7 +36,7 @@ object Helper {
 	    case INT(v) => v
 	    case STRING(v) => v
 	    case SYMBOL(v) => v
-	    case UNQUOTE(v) => if(unquote) Eval.eval(v,env) else Symbol("~")::List(unwrap(v))
+	    case UNQUOTE(v) => if(unquote) Eval.eval(v,env,true) else Symbol("~")::List(unwrap(v))
 	    case QUOTE(v) => Symbol("'")::List(unwrap(v,unquote,env))
 	    case LIST(v) => v.map(a => unwrap(a, unquote,env)).toList
 	  }

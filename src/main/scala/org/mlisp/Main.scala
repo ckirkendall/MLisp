@@ -12,10 +12,11 @@ case class LIST(value: List[Exp]) extends Exp
 case class QUOTE(value: Exp) extends Exp
 case class UNQUOTE(value: Exp) extends Exp
 
+
 class Reader extends RegexParsers {
   def sym: Parser[SYMBOL] = """[a-zA-Z$+\-?\*][a-zA-Z0-9$\*\-?\.]*""".r ^^ { s => SYMBOL(Symbol(s)) }
   def num: Parser[INT] = """\d+""".r ^^ { i => INT(new java.lang.Long(i)) }
-  def str: Parser[STRING] = "\"" ~> """([^"\p{Cntrl}\\]|\\[\\/bfnrt]|\\u[a-fA-F0-9]{4})*""".r <~ "\"" ^^ {  str => STRING(str) } //"
+  def str: Parser[STRING] = "\"" ~> """([^""\p{Cntrl}\\]|\\[\\/bfnrt]|\\u[a-fA-F0-9]{4})*""".r <~ "\"" ^^ {  str => STRING(str) } //"
   def lst: Parser[LIST] = "(" ~> repsep(exp, """\s*""".r) <~ ")" ^^ { args => LIST(args) }
   def quote: Parser[QUOTE] = "'" ~> act ^^ { obj => QUOTE(obj) }
   def unquote: Parser[UNQUOTE] = "~" ~> act ^^ { obj => UNQUOTE(obj) }
@@ -27,9 +28,12 @@ class Reader extends RegexParsers {
   def explist = rep(exp)
 }
 
+
 object Eval { 
-  def eval(exp: Exp, env: Env) : Any = {
-    exp match {
+  def eval(exp: Exp, env: Env) : Any = eval(exp,env,false)
+
+  def eval(exp: Exp, env: Env, tailCall: Boolean) : Any = {
+    exp match { 
       case INT(i) => i
       case STRING(str) => str
       case SYMBOL(sym) => env.lookup(sym)
@@ -37,7 +41,16 @@ object Eval {
       case UNQUOTE(exp) => throw new RuntimeException("naked unquote")
       case LIST(lst) => lst match {
 	case fexp::args => eval(fexp, env) match {
-	  case fn: Fn => fn(env,args)
+	  case fn: Fn => {
+	    val fval=fn(env,args)
+	    if(tailCall) fval
+	    else{
+	      fval match {
+		case th: Thunk => eval(th)
+		case _ => fval
+	      }
+	    }
+	  }
 	  case _ => throw new RuntimeException("invalid function call")
 	}
 	case Nil => Nil
@@ -45,8 +58,22 @@ object Eval {
     }
   } 
 
-  def eval(lst: List[Exp], env: Env) : Any = {
-    lst.map(eval(_,env)).last
+  def eval(lst: List[Exp], env: Env) : List[Any] = { 
+    lst.map(eval(_,env,false))
+  }
+
+  def eval(thunk: Thunk): Any = {
+    val tmp=thunk()
+    tmp match {
+      case th: Thunk => eval(th)
+      case _ => tmp
+    }
+  }
+ 
+  def evalWithTailCall(list: List[Exp], env: Env): List[Any] = list match {
+    case Nil => Nil
+    case xs::Nil => List(eval(xs,env,true))
+    case xs::tail => eval(xs,env,false)::evalWithTailCall(tail,env)
   }
 }
 
@@ -54,6 +81,7 @@ object Eval {
 abstract class Fn {
   def apply(env: Env, args: List[Exp]) : Any
 }
+
 
 //SPECIAL FORMS
 
@@ -68,15 +96,15 @@ class FnBuilder(isMacro: Boolean) extends Fn {
     	    val pairs = Helper.zipArgs(Helper.listAnytoListSymbol(asyms),vals);
 	    //println(pairs)
 	    pairs.foreach(pair => pair._2 match {
-	      case l: List[Exp] => nenv.assign(pair._1, if(isMacro) Helper.unwrap(l) else l.map(Eval.eval(_,env)))
+	      case l: List[Exp] => nenv.assign(pair._1, if(isMacro) Helper.unwrap(l) else Eval.eval(l,env))
 	      case x: Exp => nenv.assign(pair._1, if(isMacro) Helper.unwrap(x) else Eval.eval(x, env))
 	      case _ => throw new RuntimeException("invalid arguments")
 	    })
 	  }
 	  if(isMacro) 
-	    Eval.eval(Helper.wrap(body.map(Eval.eval(_,nenv)).last), env)
+	    new Thunk(List(Helper.wrap(Eval.eval(body,nenv).last)), env)
 	  else
-	    Eval.eval(body,nenv)
+	    new Thunk(body,nenv)
 	}
       } 
       case _ => throw new RuntimeException("invalid fn statement" + exps)
@@ -110,34 +138,103 @@ class IfFn extends Fn {
 class DotFn extends Fn {
   def apply(env: Env, vals: List[Exp]): Any = {
     try { 
-	    vals match {
-	      case Nil => throw new RuntimeException("invalid method call: no obj")
-	      case exp::SYMBOL(meth)::aexps => {
-	        val obj = Eval.eval(exp,env)
-	        val clazz = if(obj.isInstanceOf[java.lang.Class[_]]) obj.asInstanceOf[java.lang.Class[_]] else obj.getClass
-	        val mname = meth.name
-	        val fieldOption = if(aexps.isEmpty) clazz.getFields.filter(_.getName.equals(mname)).headOption else None
-	        fieldOption match {
-	          case Some(v) => v.get(obj)
-	          case None =>
-	            val args = aexps.map((e) => Eval.eval(e,env))
-	            val rel = ClazzUtils.findBestMatchMethod(clazz, mname, args)
-	            val m = rel match {
-	              case EXACT(m) => m
-	              case COMPATABLE(m) => m
-	              case NOREL() => throw new RuntimeException("invalid method call:"+clazz+":"+obj+":"+meth)
-	            }
-	            m.invoke(obj, args.map(_.asInstanceOf[java.lang.Object]):_*)
-	        }
+      vals match {
+	case Nil => throw new RuntimeException("invalid method call: no obj")
+	case exp::SYMBOL(meth)::aexps => {
+	  val obj = Eval.eval(exp,env)
+	  val clazz = if(obj.isInstanceOf[java.lang.Class[_]]) obj.asInstanceOf[java.lang.Class[_]] else obj.getClass
+	  val mname = meth.name
+	  val fieldOption = if(aexps.isEmpty) clazz.getFields.filter(_.getName.equals(mname)).headOption else None
+	  fieldOption match {
+	    case Some(v) => v.get(obj)
+	    case None =>{
+	      val args = Eval.eval(aexps,env)
+	      val rel = ClazzUtils.findBestMatchMethod(clazz, mname, args)
+	      val m = rel match {
+		case EXACT(m) => m
+		case COMPATABLE(m) => m
+		case NOREL() => throw new RuntimeException("invalid method call:"+clazz+":"+obj+":"+meth)
+		
 	      }
-	      case _ => throw new RuntimeException("invalid method syntax:")
+	      m.invoke(obj, args.map(_.asInstanceOf[java.lang.Object]):_*)
 	    }
-	 } catch {
-        case error: Throwable => {
-          println("invalid method call")
-          throw error
+	  }
+	}
+	case _ => throw new RuntimeException("invalid method syntax:")
+      }
+    } catch {
+      case error: Throwable => {
+        println("invalid method call")
+        throw error
+      }
+    }
+  }
+}
+
+
+class NewFn() extends Fn {
+  def apply(env: Env, vals: List[Exp]): Any = vals match {
+    case SYMBOL(clazz)::expArgs => {
+      expArgs match { 
+	case Nil => Class.forName(clazz.name).newInstance
+	case _ => { 
+          val args = Eval.eval(expArgs,env)
+          val rel = ClazzUtils.findBestMatchConstructor(Class.forName(clazz.name),args)
+          val m = rel match {
+            case EXACT(m) => m
+            case COMPATABLE(m) => m
+            case NOREL() => throw new RuntimeException("invalid method call")
+          }
+          m.newInstance(args.map(_.asInstanceOf[java.lang.Object]):_*)
+	}
+      }
+    }
+    case _ => throw new RuntimeException("invalid constructor")
+  }
+}
+
+
+class TryFn extends Fn {
+  def isCatch(exp: Exp) = exp match {
+    case LIST(v) => v match {
+      case xs::tail => xs match {
+        case SYMBOL(Symbol("catch")) => true
+        case _ => false
+      }
+      case _ => false
+    }
+  }
+  def catchTransform(cExp: LIST): (Class[_], Exp) = cExp.value match {
+    case _::arg::body => arg match {
+      case LIST(SYMBOL(x)::SYMBOL(y)::Nil) => (Class.forName(y.name),LIST(List('let,List(x,Symbol("*ex*"))).map(Helper.wrap):::body))
+      case _ => throw new RuntimeException("invalid argument to catch statement")
+    }
+    case _ => throw new RuntimeException("invalid catch statement")
+  }
+  
+  def apply(env: Env, vals: List[Exp]): Any = {
+    val body = vals.filter((a) => !isCatch(a))
+    val catches = vals.filter((a) => isCatch(a)).map((a) => catchTransform(a.asInstanceOf[LIST]))
+    try{ 
+      Eval.eval(body,env).last
+    }catch {
+      case error: java.lang.Throwable => catches.dropWhile((exp) => !exp._1.isAssignableFrom(error.getClass())) match {
+        case Nil => throw error
+        case head::tail => {
+          env.assign(Symbol("*ex*"), error)
+          Eval.eval(head._2,env,false)
+          error.printStackTrace()
+          "Error"
         }
-     }
+      }
+    }
+  }
+}
+
+
+class Thunk(body: List[Exp], env: Env){
+  def apply(): Any = {
+    Eval.evalWithTailCall(body, env).last
   }
 }
 
@@ -151,60 +248,22 @@ object Main extends App {
       env.assign(Symbol("fn"), new FnBuilder(false))
       env.assign(Symbol("macro"), new FnBuilder(true))
       env.assign(Symbol("."), new DotFn())
+      env.assign(Symbol("new"), new NewFn())
+      env.assign(Symbol("try"), new TryFn())
       env.assign(Symbol("*reader*"), reader)
       env.assign(Symbol("*coreenv*"), env)  
-      val coreLib = """
-(def true (. java.lang.Boolean TRUE))
-(def false (. java.lang.Boolean FALSE))
-(def cons (fn (item lst) (. lst $colon$colon item)))
-(def first (fn (lst) (. lst head)))
-(def rest (fn (lst) (. lst tail)))
-(def empty? (fn (x) (. x isEmpty)))
+       
+      val coreSource = io.Source.fromInputStream(getClass.getResourceAsStream("/org/mlisp/core.lisp"))
+      val coreLib = coreSource.mkString
+      coreSource.close
+      val replSource = io.Source.fromInputStream(getClass.getResourceAsStream("/org/mlisp/repl.lisp"))
+      val replLib = replSource.mkString
+      replSource.close
 
-(def let* 
-  (macro (plst & body)
-    (cons (cons 'fn 
-		(cons (cons (first plst) ()) 
-		      body)) 
-	  (rest plst))))
-	  
-(def let 
-  (macro (plst & body)
-    (if (empty? plst)
-        (cons (cons 'fn (cons () body)) ())
-        (cons 'let* 
-               (cons (cons (first plst) 
-			   (cons (first (rest plst)) ()))
-		     (cons (cons 'let 
-				 (cons (rest (rest plst)) 
-				       body)) 
-			   ()))))))
-
-(def defmacro 
-  (macro (sym & body)
-    (let (m (cons 'macro body))
-      '(def ~sym ~m))))
-
-(defmacro defn (sym & body) 
-  (let (f (cons 'fn body)) 
-  	'(def ~sym ~f)))
-
-(defn println (x) (. (. java.lang.System out) println x))
-(defn + (x y) (. org.mlisp.utils.Math add x y))
-(defn - (x y) (. org.mlisp.utils.Math sub x y)) 
-      """
-
-      val test = """
-(println (+ 1 2))
-(defn dec (x) (- x 1))
-(let (a 3
-      b (dec 3))
-  (println (+ a b)))
-      """
 
       val coreExp = reader.parseAll(reader.explist, coreLib)
       coreExp.get.map(Eval.eval(_,env))
-      val testExp = reader.parseAll(reader.explist, test)
+      val testExp = reader.parseAll(reader.explist, replLib)
       testExp.get.map(Eval.eval(_,env))
     } 
 }

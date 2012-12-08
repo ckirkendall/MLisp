@@ -164,7 +164,7 @@ class LangSpec extends FunSpec {
     it("should assign the symbol to the result") {
       val env = setupEnv()
       val defExp = reader.parseAll(reader.explist, defstr + " a")
-      expectResult(new Long("1")) { Eval.eval(defExp.get, env) }  
+      expectResult(new Long("1")) { Eval.eval(defExp.get, env).last }  
     } 
   }
 

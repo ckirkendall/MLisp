@@ -33,6 +33,11 @@
   (let (f (cons 'fn body)) 
   	'(def ~sym ~f)))
 
+(def sysin (new java.io.BufferedReader (new java.io.InputStreamReader (. java.lang.System in))))
 (defn println (x) (. (. java.lang.System out) println x))
+(defn print (x) (. (. java.lang.System out) print x))
+(defn read () (. sysin read))
+(defn readln () (. sysin readLine))
+
 (defn + (x y) (. org.mlisp.utils.Math add x y))
 (defn - (x y) (. org.mlisp.utils.Math sub x y))
